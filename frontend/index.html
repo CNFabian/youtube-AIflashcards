@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube to Flashcards AI</title>
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+    <header>
+        <div class="container">
+            <div class="header-content">
+                <h1>
+                    <div class="logo">📚</div>
+                    YouTube to Flashcards AI
+                </h1>
+                <div class="header-actions">
+                    <button class="theme-toggle" id="themeToggle">🌙</button>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main class="main-content">
+        <div class="container">
+            <!-- Input Section -->
+            <section class="input-section" id="inputSection">
+                <div class="input-group">
+                    <input 
+                        type="text" 
+                        class="url-input" 
+                        id="youtubeUrl" 
+                        placeholder="Enter YouTube URL (e.g., https://www.youtube.com/watch?v=...)"
+                    >
+                    <button class="generate-btn" id="generateBtn">
+                        <span class="btn-icon">✨</span>
+                        <span class="btn-text">Generate Flashcards</span>
+                        <span class="spinner hidden"></span>
+                    </button>
+                </div>
+                
+                <div class="options">
+                    <div class="option-group">
+                        <label for="numCards">Number of Cards</label>
+                        <select id="numCards">
+                            <option value="5">5 cards</option>
+                            <option value="10" selected>10 cards</option>
+                            <option value="15">15 cards</option>
+                            <option value="20">20 cards</option>
+                        </select>
+                    </div>
+                    <div class="option-group">
+                        <label for="difficulty">Difficulty Level</label>
+                        <select id="difficulty">
+                            <option value="easy">Easy</option>
+                            <option value="medium">Medium</option>
+                            <option value="hard">Hard</option>
+                            <option value="mixed" selected>Mixed</option>
+                        </select>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Error Message -->
+            <div class="message error-message hidden" id="errorMessage"></div>
+            
+            <!-- Success Message -->
+            <div class="message success-message hidden" id="successMessage"></div>
+
+            <!-- Loading State -->
+            <section class="loading-section hidden" id="loadingSection">
+                <div class="loading-content">
+                    <div class="loader"></div>
+                    <h3>Generating flashcards from video...</h3>
+                    <p>Extracting transcript and creating study materials</p>
+                    <div class="loading-progress">
+                        <div class="loading-progress-bar"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Study Section -->
+            <section class="study-section hidden" id="studySection">
+                <!-- Video Info -->
+                <div class="video-info">
+                    <div class="video-thumbnail" id="videoThumbnail"></div>
+                    <div class="video-details">
+                        <h2 class="video-title" id="videoTitle">Loading...</h2>
+                        <div class="video-meta">
+                            <span class="meta-item" id="totalCards">0 cards</span>
+                            <span class="meta-item" id="videoLanguage">Language: en</span>
+                            <span class="meta-item" id="videoDuration">Duration: --:--</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Study Controls -->
+                <div class="study-controls">
+                    <div class="progress-section">
+                        <span class="progress-text" id="progressText">Card 1 of 10</span>
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="progressFill"></div>
+                        </div>
+                    </div>
+                    
+                    <div class="control-buttons">
+                        <button class="control-btn" id="shuffleBtn" title="Shuffle Cards">
+                            🔀 Shuffle
+                        </button>
+                        <button class="control-btn" id="resetBtn" title="Reset Progress">
+                            ↺ Reset
+                        </button>
+                        <button class="control-btn" id="exportBtn" title="Export Cards">
+                            📥 Export
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Flashcard Display -->
+                <div class="flashcard-container">
+                    <div class="flashcard" id="flashcard">
+                        <div class="card-side card-front">
+                            <span class="card-label">Question</span>
+                            <div class="difficulty-badge" id="difficultyBadge"></div>
+                            <div class="card-content" id="questionText"></div>
+                        </div>
+                        <div class="card-side card-back">
+                            <span class="card-label">Answer</span>
+                            <div class="difficulty-badge" id="difficultyBadgeBack"></div>
+                            <div class="card-content" id="answerText"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Navigation -->
+                <div class="nav-controls">
+                    <button class="nav-btn" id="prevBtn">
+                        <span>←</span> Previous
+                    </button>
+                    <button class="nav-btn primary" id="flipBtn">
+                        🔄 Flip Card
+                    </button>
+                    <button class="nav-btn" id="nextBtn">
+                        Next <span>→</span>
+                    </button>
+                </div>
+
+                <div class="keyboard-hints">
+                    <span class="hint">Space: Flip</span>
+                    <span class="hint">←/→: Navigate</span>
+                    <span class="hint">R: Reset</span>
+                    <span class="hint">S: Shuffle</span>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <script src="js/api.js"></script>
+    <script src="js/flashcard-manager.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
