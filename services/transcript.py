@@ -1,7 +1,6 @@
 """
 YouTube Transcript Extraction Service
-Hybrid approach using youtube-transcript-api with BeautifulSoup for metadata
-Based on the approach from the video tutorial
+Fixed version with correct YouTubeTranscriptApi usage
 """
 import re
 import json
@@ -23,21 +22,18 @@ class TranscriptService:
     """Service for extracting transcripts and metadata from YouTube videos"""
     
     def __init__(self):
-        """Initialize the service with session for web scraping and YouTube API"""
+        """Initialize the service with session for web scraping"""
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept-Language': 'en-US,en;q=0.9',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         })
-        # Create YouTubeTranscriptApi instance (CORRECT according to docs)
-        self.ytt_api = YouTubeTranscriptApi()
     
     @staticmethod
     def extract_video_id(url: str) -> Optional[str]:
         """
         Extract video ID from various YouTube URL formats
-        Following the approach from the video: strip URL to get video ID
         """
         # Handle short URLs (youtu.be)
         if 'youtu.be' in url:
@@ -67,7 +63,6 @@ class TranscriptService:
     def get_video_metadata(self, video_url: str) -> Dict[str, Any]:
         """
         Use BeautifulSoup to get video title and metadata from YouTube page
-        As shown in the video: use requests.get and BeautifulSoup for the title
         """
         video_id = self.extract_video_id(video_url)
         if not video_id:
@@ -77,7 +72,7 @@ class TranscriptService:
         full_url = f"https://www.youtube.com/watch?v={video_id}"
         
         try:
-            # Get the page using requests (as shown in video)
+            # Get the page using requests
             logger.info(f"Fetching page for video: {video_id}")
             page = self.session.get(full_url, timeout=10)
             page.raise_for_status()
@@ -85,7 +80,7 @@ class TranscriptService:
             # Use BeautifulSoup to parse the page
             soup = BeautifulSoup(page.text, 'html.parser')
             
-            # Get the title from the page (as shown in video)
+            # Get the title from the page
             title = soup.find('title')
             video_title = title.text.replace(' - YouTube', '') if title else 'Unknown Title'
             
@@ -104,12 +99,7 @@ class TranscriptService:
             # Try to extract description
             description_meta = soup.find('meta', {'name': 'description'})
             if description_meta:
-                metadata['description'] = description_meta.get('content', '')[:500]  # First 500 chars
-            
-            # Try to extract duration from meta tags
-            duration_meta = soup.find('meta', {'itemprop': 'duration'})
-            if duration_meta:
-                metadata['duration_iso'] = duration_meta.get('content', '')
+                metadata['description'] = description_meta.get('content', '')[:500]
             
             return metadata
             
@@ -125,74 +115,64 @@ class TranscriptService:
     def get_transcript_from_api(self, video_id: str, language: str = 'en') -> Optional[Dict]:
         """
         Use youtube-transcript-api to get the transcript
-        Using the CORRECT API from official documentation
+        Using the CORRECT static method approach
         """
         try:
             logger.info(f"Fetching transcript using API for video: {video_id}")
             
-            # Method 1: Direct fetch with language preference
+            # Method 1: Try to get transcript with language preference
             try:
-                fetched_transcript = self.ytt_api.fetch(video_id, languages=[language, 'en'])
-                logger.info(f"Got transcript in {fetched_transcript.language}")
+                # Use the static method directly
+                transcript_data = YouTubeTranscriptApi.get_transcript(
+                    video_id, 
+                    languages=[language, 'en', 'en-US', 'en-GB']
+                )
                 
-                # Convert to raw data format
+                logger.info(f"Got transcript with {len(transcript_data)} segments")
+                
                 return {
-                    'segments': fetched_transcript.to_raw_data(),
-                    'language': fetched_transcript.language,
-                    'is_generated': fetched_transcript.is_generated
+                    'segments': transcript_data,
+                    'language': language,
+                    'is_generated': False  # We can't determine this easily with static method
                 }
+                
             except:
                 # Try without language specification
                 try:
-                    fetched_transcript = self.ytt_api.fetch(video_id)
-                    logger.info(f"Got transcript (auto-detected language: {fetched_transcript.language})")
+                    transcript_data = YouTubeTranscriptApi.get_transcript(video_id)
+                    logger.info(f"Got transcript (auto-detected language)")
+                    
                     return {
-                        'segments': fetched_transcript.to_raw_data(),
-                        'language': fetched_transcript.language,
-                        'is_generated': fetched_transcript.is_generated
+                        'segments': transcript_data,
+                        'language': 'auto',
+                        'is_generated': False
                     }
                 except:
                     pass
             
-            # Method 2: Use list() to find available transcripts
-            try:
-                transcript_list = self.ytt_api.list(video_id)
-                
-                # Try to find transcript in requested language
-                try:
-                    transcript = transcript_list.find_transcript([language])
-                    fetched = transcript.fetch()
-                    logger.info(f"Found transcript via list() in {language}")
-                    return {
-                        'segments': fetched.to_raw_data(),
-                        'language': fetched.language,
-                        'is_generated': fetched.is_generated
-                    }
-                except:
-                    # Get first available transcript
-                    for transcript in transcript_list:
-                        try:
-                            fetched = transcript.fetch()
-                            logger.info(f"Got transcript in {transcript.language_code}")
-                            return {
-                                'segments': fetched.to_raw_data(),
-                                'language': fetched.language,
-                                'is_generated': fetched.is_generated
-                            }
-                        except:
-                            continue
-            except Exception as e:
-                logger.warning(f"list() method failed: {e}")
-                
-        except NoTranscriptFound:
-            logger.warning(f"No transcript found via API for video: {video_id}")
-            # Try listing all transcripts
+            # Method 2: Use list_transcripts to find available transcripts
             try:
                 transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+                
+                # Try to find transcript in requested language
+                for transcript in transcript_list:
+                    try:
+                        if transcript.language_code.startswith(language):
+                            data = transcript.fetch()
+                            logger.info(f"Found transcript in {transcript.language_code}")
+                            return {
+                                'segments': data,
+                                'language': transcript.language_code,
+                                'is_generated': transcript.is_generated
+                            }
+                    except:
+                        continue
+                
+                # If no match, get the first available transcript
                 for transcript in transcript_list:
                     try:
                         data = transcript.fetch()
-                        logger.info(f"Found transcript in {transcript.language_code}")
+                        logger.info(f"Using first available transcript: {transcript.language_code}")
                         return {
                             'segments': data,
                             'language': transcript.language_code,
@@ -200,9 +180,12 @@ class TranscriptService:
                         }
                     except:
                         continue
-            except:
-                pass
+                        
+            except Exception as e:
+                logger.warning(f"list_transcripts method failed: {e}")
                 
+        except NoTranscriptFound:
+            logger.warning(f"No transcript found for video: {video_id}")
         except TranscriptsDisabled:
             logger.error(f"Transcripts are disabled for video: {video_id}")
         except VideoUnavailable:
@@ -215,7 +198,6 @@ class TranscriptService:
     def get_transcript_with_beautifulsoup_fallback(self, video_url: str) -> Optional[Dict]:
         """
         Fallback method: Try to extract transcript data from page HTML
-        The video mentions this is difficult due to JavaScript, but we can try
         """
         video_id = self.extract_video_id(video_url)
         if not video_id:
@@ -226,7 +208,6 @@ class TranscriptService:
             response = self.session.get(full_url, timeout=10)
             
             # Look for caption tracks in the initial player response
-            # This is embedded in the page as JSON
             pattern = r'ytInitialPlayerResponse\s*=\s*({.+?})\s*;'
             match = re.search(pattern, response.text)
             
@@ -282,19 +263,16 @@ class TranscriptService:
     ) -> Dict[str, Any]:
         """
         Main method: Get transcript using hybrid approach
-        1. Use BeautifulSoup to get video title and metadata
-        2. Use youtube-transcript-api to get transcript
-        3. Fall back to BeautifulSoup scraping if API fails
         """
         # Extract video ID
         video_id = self.extract_video_id(video_url)
         if not video_id:
             raise ValueError(f"Could not extract video ID from URL: {video_url}")
         
-        # Step 1: Get metadata using BeautifulSoup (as shown in video)
+        # Step 1: Get metadata using BeautifulSoup
         metadata = self.get_video_metadata(video_url)
         
-        # Step 2: Try to get transcript using API (primary method from video)
+        # Step 2: Try to get transcript using API
         transcript_data = self.get_transcript_from_api(video_id, language)
         
         # Step 3: If API fails, try BeautifulSoup fallback
@@ -311,7 +289,7 @@ class TranscriptService:
         # Process the transcript segments
         segments = transcript_data['segments']
         
-        # Create full text from segments (as shown in video with output parsing)
+        # Create full text from segments
         if preserve_formatting:
             full_text = '\n'.join([segment['text'] for segment in segments])
         else:
@@ -362,4 +340,4 @@ class TranscriptService:
         text = text.replace('\n', ' ')
         text = text.strip()
         
-        return text 
+        return text

@@ -1,268 +1,360 @@
 """
-YouTube Video to Flashcards - Final Working Version
-Handles all language code variations properly
+YouTube to Flashcards AI - FastAPI Backend
+Complete main.py with frontend integration
 """
-
-from youtube_transcript_api import YouTubeTranscriptApi
-import requests
-from bs4 import BeautifulSoup
-import openai
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import ValidationError
 import os
+import sys
+from datetime import datetime
+from typing import Optional
+import logging
+import uvicorn
 from dotenv import load_dotenv
-import json
 
 # Load environment variables
 load_dotenv()
 
-# Set OpenAI API key
-openai.api_key = os.getenv("OPENAI_API_KEY")
+# Add project root to path for imports
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-def extract_video_id(url):
-    """Extract video ID from various YouTube URL formats"""
-    if 'youtu.be' in url:
-        return url.split('/')[-1].split('?')[0]
-    elif 'youtube.com' in url and 'v=' in url:
-        return url.split('v=')[1].split('&')[0]
-    return None
+# Import services and models
+from services.transcript import TranscriptService
+from services.ai_processor import AIProcessor
+from models import (
+    FlashcardRequest,
+    FlashcardSet,
+    Flashcard,
+    ErrorResponse,
+    HealthResponse
+)
 
-def get_video_metadata(url):
-    """Get video title and metadata using BeautifulSoup"""
-    try:
-        page = requests.get(url)
-        soup = BeautifulSoup(page.text, 'html.parser')
-        title = soup.title.text.replace(' - YouTube', '')
-        return title
-    except:
-        return "Unknown Title"
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-def get_transcript(video_id):
-    """Get transcript using the correct API method"""
-    ytt_api = YouTubeTranscriptApi()
-    
-    # Try Method 1: Use list() to see what's available
-    try:
-        transcript_list = ytt_api.list(video_id)
-        
-        # Print available transcripts for debugging
-        print("📋 Available transcripts:")
-        for t in transcript_list:
-            print(f"   - {t.language} ({t.language_code}) - Generated: {t.is_generated}")
-        
-        # Try to get English transcript (any variant)
-        english_codes = ['en', 'en-US', 'en-GB', 'en-AU', 'en-CA', 'en-IN']
-        
-        for code in english_codes:
-            try:
-                transcript = transcript_list.find_transcript([code])
-                fetched = transcript.fetch()
-                print(f"✅ Using transcript: {fetched.language} ({fetched.language_code})")
-                return fetched.to_raw_data(), fetched.language_code
-            except:
-                continue
-        
-        # If no English found, get the first available
-        for transcript in transcript_list:
-            try:
-                fetched = transcript.fetch()
-                print(f"✅ Using transcript: {fetched.language} ({fetched.language_code})")
-                return fetched.to_raw_data(), fetched.language_code
-            except:
-                continue
-                
-    except Exception as e:
-        print(f"❌ Error listing transcripts: {e}")
-    
-    # Try Method 2: Direct fetch
-    try:
-        fetched = ytt_api.fetch(video_id)
-        return fetched.to_raw_data(), fetched.language_code
-    except:
-        pass
-    
-    return None, None
+# Initialize FastAPI app
+app = FastAPI(
+    title="YouTube to Flashcards AI",
+    description="Convert YouTube educational videos into interactive study flashcards using AI",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
 
-def generate_flashcards(transcript_text, num_cards=10):
-    """Generate flashcards using OpenAI"""
-    if not openai.api_key or openai.api_key == "your_openai_api_key_here":
-        print("⚠️ OpenAI API key not configured")
-        return None
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:8000",
+        "http://localhost:8080",
+        "http://localhost:3000",
+        "http://127.0.0.1:8000",
+        "http://127.0.0.1:8080",
+        "http://127.0.0.1:3000",
+        "*"  # Allow all origins in development (remove in production)
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Mount static files for frontend (if frontend directory exists)
+if os.path.exists("frontend"):
+    # Serve CSS files
+    if os.path.exists("frontend/css"):
+        app.mount("/css", StaticFiles(directory="frontend/css"), name="css")
+    
+    # Serve JS files
+    if os.path.exists("frontend/js"):
+        app.mount("/js", StaticFiles(directory="frontend/js"), name="js")
+    
+    # Serve assets
+    if os.path.exists("frontend/assets"):
+        app.mount("/assets", StaticFiles(directory="frontend/assets"), name="assets")
+    
+    logger.info("Frontend static files mounted successfully")
+else:
+    logger.warning("Frontend directory not found. API-only mode.")
+
+# Initialize services
+transcript_service = TranscriptService()
+ai_processor = AIProcessor()
+
+# Root endpoint - serve frontend or API info
+@app.get("/", include_in_schema=False)
+async def read_root():
+    """Serve the frontend index.html if available, otherwise return API info"""
+    if os.path.exists("frontend/index.html"):
+        return FileResponse('frontend/index.html')
+    return {
+        "name": "YouTube to Flashcards AI API",
+        "version": "1.0.0",
+        "status": "running",
+        "documentation": "/docs",
+        "frontend": "Not found - please add frontend files to /frontend directory"
+    }
+
+# Health check endpoint
+@app.get("/health", response_model=HealthResponse, tags=["System"])
+async def health_check():
+    """Check if the API is healthy and running"""
+    return HealthResponse(
+        status="healthy",
+        version="1.0.0",
+        timestamp=datetime.utcnow()
+    )
+
+# API v1 endpoints
+@app.get("/api/v1", tags=["API Info"])
+async def api_info():
+    """Get API version and endpoints information"""
+    return {
+        "version": "1.0.0",
+        "endpoints": {
+            "generate_flashcards": "/api/v1/flashcards/generate",
+            "health": "/health",
+            "documentation": "/docs"
+        },
+        "description": "YouTube to Flashcards AI API"
+    }
+
+# Main flashcard generation endpoint
+@app.post("/api/v1/flashcards/generate", response_model=FlashcardSet, tags=["Flashcards"])
+async def generate_flashcards(request: FlashcardRequest):
+    """
+    Generate flashcards from a YouTube video
+    
+    Args:
+        request: FlashcardRequest containing YouTube URL and preferences
+        
+    Returns:
+        FlashcardSet with generated flashcards
+    """
+    logger.info(f"Generating flashcards for URL: {request.youtube_url}")
     
     try:
-        from openai import OpenAI
-        client = OpenAI(api_key=openai.api_key)
+        # Step 1: Extract video ID and validate URL
+        video_id = transcript_service.extract_video_id(request.youtube_url)
+        if not video_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid YouTube URL. Please provide a valid YouTube video URL."
+            )
         
-        prompt = f"""Create {num_cards} educational flashcards from this transcript.
+        # Step 2: Get video metadata
+        logger.info(f"Fetching metadata for video ID: {video_id}")
+        metadata = transcript_service.get_video_metadata(request.youtube_url)
         
-        Return as JSON array with this format:
-        [
-            {{
-                "question": "Clear, specific question",
-                "answer": "Concise, accurate answer",
-                "difficulty": "easy|medium|hard"
-            }}
-        ]
-        
-        Transcript: {transcript_text[:3000]}"""
-        
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are an educational content creator."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.7
+        # Step 3: Extract transcript
+        logger.info(f"Extracting transcript for video ID: {video_id}")
+        transcript_data = transcript_service.get_transcript(
+            request.youtube_url,
+            language=request.language,
+            preserve_formatting=False
         )
         
-        # Parse JSON response
-        content = response.choices[0].message.content
-        # Extract JSON if wrapped in code blocks
-        if "```json" in content:
-            content = content.split("```json")[1].split("```")[0]
-        elif "```" in content:
-            content = content.split("```")[1].split("```")[0]
+        if not transcript_data or not transcript_data.get('full_text'):
+            raise HTTPException(
+                status_code=404,
+                detail="Could not extract transcript. The video may not have captions enabled."
+            )
         
-        flashcards = json.loads(content)
-        return flashcards
+        # Step 4: Generate flashcards using AI
+        logger.info(f"Generating {request.num_cards} flashcards with {request.difficulty_level} difficulty")
+        flashcards_data = ai_processor.generate_flashcards(
+            transcript=transcript_data['full_text'],
+            num_cards=request.num_cards,
+            difficulty_level=request.difficulty_level,
+            subject_focus=request.subject_focus,
+            video_title=transcript_data.get('video_title')
+        )
         
+        if not flashcards_data:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to generate flashcards. Please try again."
+            )
+        
+        # Step 5: Create flashcard objects
+        flashcards = []
+        for card_data in flashcards_data:
+            flashcard = Flashcard(
+                question=card_data['question'],
+                answer=card_data['answer'],
+                difficulty=card_data.get('difficulty', 'medium'),
+                topic=card_data.get('topic'),
+                explanation=card_data.get('explanation')
+            )
+            flashcards.append(flashcard)
+        
+        # Step 6: Create and return FlashcardSet
+        flashcard_set = FlashcardSet(
+            video_url=request.youtube_url,
+            video_title=transcript_data.get('video_title', 'Unknown Title'),
+            video_id=video_id,
+            channel_name=transcript_data.get('channel_name'),
+            duration=transcript_data.get('duration', 0),
+            flashcards=flashcards,
+            transcript_length=len(transcript_data.get('full_text', '')),
+            language=transcript_data.get('language', request.language)
+        )
+        
+        logger.info(f"Successfully generated {len(flashcards)} flashcards for video: {video_id}")
+        return flashcard_set
+        
+    except HTTPException:
+        raise
+    except ValidationError as e:
+        logger.error(f"Validation error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        print(f"Error generating flashcards: {e}")
-        return None
+        logger.error(f"Unexpected error generating flashcards: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"An unexpected error occurred: {str(e)}"
+        )
 
-def main():
-    """Main function"""
-    print("🎓 YouTube to Flashcards Generator")
-    print("=" * 50)
+# Sample/demo flashcards endpoint for testing
+@app.get("/api/v1/flashcards/sample", response_model=FlashcardSet, tags=["Flashcards"])
+async def get_sample_flashcards():
+    """Get sample flashcards for testing and demonstration"""
     
-    # Get URL from user
-    url = input("Enter YouTube URL: ").strip()
-    if not url:
-        url = "https://www.youtube.com/watch?v=0fONene3OIA"
+    sample_flashcards = [
+        Flashcard(
+            question="What is machine learning?",
+            answer="Machine learning is a subset of artificial intelligence that enables systems to learn and improve from experience without being explicitly programmed.",
+            difficulty="easy",
+            topic="Fundamentals",
+            explanation="ML allows computers to learn patterns from data rather than following explicit instructions."
+        ),
+        Flashcard(
+            question="What are the three main types of machine learning?",
+            answer="Supervised Learning (learning from labeled data), Unsupervised Learning (finding patterns in unlabeled data), and Reinforcement Learning (learning through rewards and penalties).",
+            difficulty="medium",
+            topic="ML Types"
+        ),
+        Flashcard(
+            question="Explain the concept of overfitting.",
+            answer="Overfitting occurs when a model learns the training data too well, including noise and outliers, resulting in poor generalization to new, unseen data.",
+            difficulty="hard",
+            topic="Model Evaluation"
+        ),
+        Flashcard(
+            question="What is a neural network?",
+            answer="A computational model inspired by the human brain, consisting of interconnected nodes (neurons) organized in layers that process information.",
+            difficulty="medium",
+            topic="Deep Learning"
+        ),
+        Flashcard(
+            question="What is gradient descent?",
+            answer="An optimization algorithm used to minimize the loss function by iteratively adjusting model parameters in the direction of steepest descent.",
+            difficulty="hard",
+            topic="Optimization"
+        )
+    ]
     
-    print(f"\n🎥 Processing: {url}\n")
-    
-    # Extract video ID
-    video_id = extract_video_id(url)
-    if not video_id:
-        print("❌ Invalid YouTube URL")
-        return
-    
-    print(f"🆔 Video ID: {video_id}")
-    
-    # Get video title
-    title = get_video_metadata(url)
-    print(f"📌 Title: {title}\n")
-    
-    # Get transcript
-    print("📝 Extracting transcript...")
-    transcript_data, language = get_transcript(video_id)
-    
-    if not transcript_data:
-        print("❌ Could not extract transcript")
-        return
-    
-    # Combine transcript text
-    full_text = " ".join([segment['text'] for segment in transcript_data])
-    
-    print(f"✅ Transcript extracted!")
-    print(f"   - Language: {language}")
-    print(f"   - Length: {len(full_text)} characters")
-    print(f"   - Words: {len(full_text.split())}")
-    
-    # Show preview
-    print(f"\n📖 Preview: {full_text[:200]}...")
-    
-    # Generate flashcards
-    num_cards = input("\n💡 How many flashcards to generate? (default: 10): ").strip()
-    num_cards = int(num_cards) if num_cards.isdigit() else 10
-    
-    print(f"\n🤖 Generating {num_cards} flashcards...")
-    flashcards = generate_flashcards(full_text, num_cards)
-    
-    if flashcards:
-        print(f"\n✨ Generated {len(flashcards)} flashcards!\n")
-        
-        # Display flashcards
-        for i, card in enumerate(flashcards, 1):
-            print(f"📚 Flashcard #{i}")
-            print(f"   Difficulty: {card.get('difficulty', 'medium')}")
-            print(f"   Q: {card['question']}")
-            print(f"   A: {card['answer']}")
-            print()
-        
-        # Save to file
-        output_file = f"flashcards_{video_id}.json"
-        with open(output_file, 'w', encoding='utf-8') as f:
-            json.dump({
-                'video_url': url,
-                'video_title': title,
-                'video_id': video_id,
-                'language': language,
-                'flashcards': flashcards,
-                'transcript_preview': full_text[:500]
-            }, f, indent=2, ensure_ascii=False)
-        
-        print(f"💾 Saved to: {output_file}")
-    
-    # Save HTML version
-    with open(f"summary_{video_id}.html", 'w', encoding='utf-8') as f:
-        f.write(f"""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>{title}</title>
-    <style>
-        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
-               max-width: 900px; margin: 0 auto; padding: 20px; background: #f5f5f5; }}
-        .container {{ background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
-        h1 {{ color: #333; border-bottom: 3px solid #ff0000; padding-bottom: 10px; }}
-        .metadata {{ background: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0; }}
-        .flashcard {{ background: #fff; border: 2px solid #e0e0e0; border-radius: 8px; 
-                     padding: 20px; margin: 15px 0; transition: all 0.3s; }}
-        .flashcard:hover {{ box-shadow: 0 4px 12px rgba(0,0,0,0.15); transform: translateY(-2px); }}
-        .question {{ font-weight: bold; color: #2c3e50; font-size: 18px; margin-bottom: 10px; }}
-        .answer {{ color: #34495e; line-height: 1.6; }}
-        .difficulty {{ display: inline-block; padding: 4px 12px; border-radius: 20px; 
-                      font-size: 12px; font-weight: bold; text-transform: uppercase; }}
-        .easy {{ background: #d4edda; color: #155724; }}
-        .medium {{ background: #fff3cd; color: #856404; }}
-        .hard {{ background: #f8d7da; color: #721c24; }}
-        .transcript {{ background: #f8f9fa; padding: 20px; border-left: 4px solid #007bff; 
-                      margin-top: 30px; max-height: 400px; overflow-y: auto; }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>🎓 {title}</h1>
-        <div class="metadata">
-            <p><strong>🔗 Video:</strong> <a href="{url}" target="_blank">{url}</a></p>
-            <p><strong>🆔 ID:</strong> {video_id}</p>
-            <p><strong>🌐 Language:</strong> {language}</p>
-            <p><strong>📝 Words:</strong> {len(full_text.split())}</p>
-        </div>
-        
-        <h2>📚 Flashcards</h2>""")
-        
-        if flashcards:
-            for i, card in enumerate(flashcards, 1):
-                difficulty = card.get('difficulty', 'medium')
-                f.write(f"""
-        <div class="flashcard">
-            <span class="difficulty {difficulty}">{difficulty}</span>
-            <div class="question">❓ Question {i}: {card['question']}</div>
-            <div class="answer">✅ Answer: {card['answer']}</div>
-        </div>""")
-        
-        f.write(f"""
-        <h2>📜 Transcript Preview</h2>
-        <div class="transcript">
-            <p>{full_text[:1000]}...</p>
-        </div>
-    </div>
-</body>
-</html>""")
-    
-    print(f"🌐 HTML saved to: summary_{video_id}.html")
-    print("\n✨ Done! Open the HTML file in your browser for a nice view.")
+    return FlashcardSet(
+        video_url="https://www.youtube.com/watch?v=demo",
+        video_title="Sample Machine Learning Tutorial",
+        video_id="demo123",
+        channel_name="Demo Channel",
+        duration=600,
+        flashcards=sample_flashcards,
+        transcript_length=5000,
+        language="en"
+    )
 
+# Error handlers
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request, exc):
+    """Handle HTTP exceptions"""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": exc.detail,
+            "status_code": exc.status_code,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    )
+
+@app.exception_handler(ValidationError)
+async def validation_exception_handler(request, exc):
+    """Handle validation errors"""
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": "Validation error",
+            "detail": str(exc),
+            "status_code": 422,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    )
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request, exc):
+    """Handle general exceptions"""
+    logger.error(f"Unhandled exception: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "Internal server error",
+            "detail": "An unexpected error occurred. Please try again later.",
+            "status_code": 500,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    )
+
+# Startup event
+@app.on_event("startup")
+async def startup_event():
+    """Run startup tasks"""
+    logger.info("Starting YouTube to Flashcards AI API...")
+    
+    # Check for OpenAI API key
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key or api_key == "your_openai_api_key_here":
+        logger.warning("OpenAI API key not configured! Please set OPENAI_API_KEY in .env file")
+    else:
+        logger.info("OpenAI API key configured ✓")
+    
+    # Check if frontend exists
+    if os.path.exists("frontend/index.html"):
+        logger.info("Frontend files found ✓")
+    else:
+        logger.info("Frontend files not found - API-only mode")
+    
+    logger.info("API ready at http://localhost:8000")
+    logger.info("API documentation available at http://localhost:8000/docs")
+
+# Shutdown event
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Run cleanup tasks"""
+    logger.info("Shutting down YouTube to Flashcards AI API...")
+
+# Main entry point
 if __name__ == "__main__":
-    main()
+    # Configuration from environment variables
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", 8000))
+    reload = os.getenv("RELOAD", "true").lower() == "true"
+    
+    # Log configuration
+    logger.info(f"Starting server on {host}:{port}")
+    logger.info(f"Auto-reload: {reload}")
+    
+    # Run the application
+    uvicorn.run(
+        "main:app",
+        host=host,
+        port=port,
+        reload=reload,
+        log_level="info"
+    )
